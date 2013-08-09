@@ -1,0 +1,219 @@
+package airlineimpl
+
+import (
+	//"strings"
+	"P3-f12/contrib/airlineproto"
+	"P3-f12/official/transaction"
+	//"P3-f12/official/lsplog"
+	"P3-f12/official/bufi"
+	"strings"
+	"time"
+	"fmt"
+	"log"
+	"net/rpc"
+)
+
+func (as *AirlineServer) transactionHandler(request *Request) {
+	switch request.content.reqType {
+	case INIT_TRANS:
+		as.initTrans(request)
+	case TRANS_RESPONSE:
+		as.responseTrans(request)
+	case TRANS_EXPIRED:
+		as.expireTrans(request)
+	case TRANS_OLD:
+		as.oldTrans(request)
+	case TRANS_OLD_RESPONSE:
+		as.oldResponse(request)
+	}
+}
+
+func (as *AirlineServer) initTrans(request *Request) {
+	args := request.content.value.(*airlineproto.TranArgs)
+	tranID := args.TranID
+	flightIDs :=  strings.Split(args.FlightID, ":")
+	amount := args.Amount
+	pptList := args.PptList
+	tm := args.TM
+	decision := transaction.COMMIT
+	log.Printf("[%s:%s] Receive Init T(%s)", as.airlineID, as.myhostport, tranID)
+	logList := bufi.NewBuf()
+	for _, flightID := range flightIDs {
+		info, exist := as.getFlightInfo(flightID)
+		if exist == false || info.Slot < amount {
+			decision = transaction.ABORT
+			if exist == true {
+				// lsplog.Vlogf(5, "[%s:%s] Slot %d >= Amount %d", as.airlineID, as.myhostport, info.Slot, amount)
+			}
+			break
+		} else {
+			getLock := as.getFlightLock(flightID)
+			if getLock == false {
+				// @@ defer or refuse??
+				decision = transaction.ABORT
+				// lsplog.Vlogf(5, "could not get lock")
+				break
+			} else {
+				log := &transLog{UPDATE, tranID, flightID, info.Slot, info.Slot - amount, pptList, tm}
+				logList.Insert(log)
+			}
+		}
+	}
+	
+	if decision == transaction.COMMIT {
+		// TODO: store log to persistent storage
+		
+	} else {
+		// TODO: store log to persistent storage
+		log.Printf("[%s:%s] Decision for T(%s): %d", as.airlineID, as.myhostport, tranID, decision)
+	}
+	conn, err := as.lib_conn.GetServerAt(tm)
+	if err != nil {
+		return
+	}
+	
+	if request.own == true {
+		log.Printf("[%s:%s] Vote %d for T(%s)", as.airlineID, as.myhostport, decision, tranID)
+		newArgs := &airlineproto.TranArgs{transaction.TRANS_RESPONSE, 
+				tranID, args.FlightID, 0, nil, decision, as.myhostport}
+		var reply airlineproto.TranReply
+		err = conn.Call("TranRPC.TransResponse", newArgs, &reply)
+	}
+	
+	if decision == transaction.COMMIT {
+		as.logBuf[tranID] = logList
+		go as.transTimer(tranID)
+	}
+}
+
+func (as *AirlineServer) responseTrans(request *Request) {
+	args := request.content.value.(*airlineproto.TranArgs)
+	tranID := args.TranID
+	//flightID := args.FlightID
+	//tm := args.TM
+	decision := args.Vote
+	
+	log.Printf("[%s:%s] Decision for T(%s): %d", as.airlineID, as.myhostport, tranID, decision)
+	
+	logList, exist := as.logBuf[tranID]
+	
+	if exist == false {
+		return
+	}
+	
+	if decision == transaction.COMMIT {
+		// TODO: store log to persistent storage
+		for !logList.Empty() {
+			log := logList.Remove().(*transLog)
+			flightID := log.flightID
+			info, _ := as.getFlightInfo(flightID)
+			info.Slot = log.new
+			delete(as.lockBuf, flightID)
+		}
+		delete(as.logBuf, tranID)
+		
+		// lsplog.Vlogf(7, "[Company Name]Commit Transaction: %s", request.content.key)
+	} else {
+		// TODO: store log to persistent storage
+		// lsplog.Vlogf(7, "[Company Name]Abort Transaction: %s", request.content.key)
+		for !logList.Empty() {
+			log := logList.Remove().(*transLog)
+			flightID := log.flightID
+			delete(as.lockBuf, flightID)
+		}
+		delete(as.logBuf, tranID)
+	}
+	as.oldLog[tranID] = decision
+}
+
+func (as *AirlineServer) oldTrans(request *Request) {
+	args := request.content.value.(*airlineproto.TranArgs)
+	transID := args.TranID
+	old, exist := as.oldLog[transID]
+	decision := transaction.NOT_DECIDED
+	if exist == true {
+		decision = old
+	}
+	request.replyc <- decision
+}
+
+func (as *AirlineServer) expireTrans(request *Request) {
+	if request.own == false {
+		return
+	}
+	// ask for decision from others
+	tranID := request.content.key
+	logList, exist := as.logBuf[tranID]
+	if exist == false {
+		return
+	}
+	
+	log := logList.Front().(*transLog)
+	pptList := log.pptList
+	tm := log.tm
+	
+	memberNum := 1 + len(pptList)
+	cnt := 0
+	member := ""
+	var reply airlineproto.TranReply
+	for {
+		if cnt == 0 {
+			member = tm
+		} else {
+			member = pptList[cnt - 1]
+		}
+		conn, err := rpc.DialHTTP("tcp", member)
+		if err == nil {
+			newArgs := &airlineproto.TranArgs{transaction.TRANS_OLD, 
+					tranID, "", 0, nil, 0, ""}
+			
+			err := conn.Call("TranRPC.TransResponse", newArgs, &reply)
+			if err != nil  && reply.Status != transaction.NOT_DECIDED {
+				break
+			}
+		}
+		cnt = (cnt + 1) % memberNum
+	}
+	
+	newArgs := &airlineproto.TranArgs{transaction.TRANS_OLD_RESPONSE, tranID, "", 0, nil, reply.Status, ""}
+	as.Transaction(newArgs, &airlineproto.TranReply{})
+}
+
+func (as *AirlineServer) oldResponse(request *Request) {
+	tranID := request.content.key
+	logList, exist := as.logBuf[tranID]
+	if exist == false {
+		fmt.Println("Strange! Log List should exist")
+		return
+	}
+	decision := request.content.value.(int)
+
+	if decision == transaction.COMMIT {
+		for !logList.Empty() {
+			log := logList.Remove().(*transLog)
+			flightID := log.flightID
+			info, _ := as.getFlightInfo(flightID)
+			info.Slot = log.new
+			delete(as.lockBuf, flightID)
+		}
+		delete(as.logBuf, tranID)
+		as.oldLog[tranID] = decision
+	}
+	if decision == transaction.ABORT {
+		for !logList.Empty() {
+			log := logList.Remove().(*transLog)
+			flightID := log.flightID
+			delete(as.lockBuf, flightID)
+		}
+		delete(as.logBuf, tranID)
+		as.oldLog[tranID] = decision
+	}
+	
+}
+
+func (as *AirlineServer) transTimer(transID string) {
+	time.Sleep(time.Duration(transaction.EXPIRARY_SECONDS) * time.Second)
+	req := &reqContent{TRANS_EXPIRED, transID, nil}
+	as.reqChan <- &Request{req, nil, true}
+}
+

@@ -1,0 +1,280 @@
+# Assumes GOPATH only has one path for your project
+export GOPATH=$(pwd)/..
+PROJECT_PATH=$GOPATH
+rm ./1.log 2> /dev/null
+rm ./2.log 2> /dev/null
+
+# Port
+MASTER_STORAGE_PORT=9000
+AIRLINE_STORAGE_PORT_1=9001
+AIRLINE_STORAGE_PORT_2=9002
+AIRLINE_STORAGE_PORT_3=9003
+AGENCY_STORAGE_PORT_1=9004
+AGENCY_STORAGE_PORT_2=9005
+
+AIRLINE_PORT_1=8001
+AIRLINE_PORT_2=8002
+AIRLINE_PORT_3=8003
+REPLICAS="localhost:$AIRLINE_PORT_1-localhost:$AIRLINE_PORT_2-localhost:$AIRLINE_PORT_3"
+
+AGENCY_PORT_1=7001
+AGENCY_PORT_2=7002
+
+./build.sh
+echo "1 Master Address Server, 3 Airline Servers for single cluster, 2 Agency Servers"
+# Start master storage server
+${PROJECT_PATH}/src/P3-f12/official/storageserver/storageserver -port=${MASTER_STORAGE_PORT} 2> /dev/null &
+MASTER_STORAGE_SERVER_PID=$!
+sleep 1
+#echo Master Storage Estalbished
+
+# Start airline server 1
+${PROJECT_PATH}/src/P3-f12/contrib/airlineserver/airlineserver -port=${AIRLINE_PORT_1} -masterstore=${MASTER_STORAGE_PORT}  -airline=JetBlue -replicas=${REPLICAS} -pos=1 &
+AIRLINE_SERVER_PID_1=$!
+sleep 1
+#echo JetBlue Airline Server 1 Estalbished
+
+# Start airline server 2
+${PROJECT_PATH}/src/P3-f12/contrib/airlineserver/airlineserver -port=${AIRLINE_PORT_2} -masterstore=${MASTER_STORAGE_PORT} -airline=JetBlue -replicas=${REPLICAS} -pos=2 &
+AIRLINE_SERVER_PID_2=$!
+sleep 1
+#echo JetBlue Airline Server 2 Estalbished
+
+# Start airline server 3
+${PROJECT_PATH}/src/P3-f12/contrib/airlineserver/airlineserver -port=${AIRLINE_PORT_3} -masterstore=${MASTER_STORAGE_PORT} -airline=JetBlue -replicas=${REPLICAS} -pos=3 &
+AIRLINE_SERVER_PID_3=$!
+sleep 1
+#echo JetBlue Airline Server 3 Estalbished
+
+#Start agency server 1
+${PROJECT_PATH}/src/P3-f12/official/storageserver/storageserver -port=${AGENCY_STORAGE_PORT_1} 2> /dev/null &
+AGENCY_STORAGE_SERVER_PID_1=$!
+sleep 1
+
+${PROJECT_PATH}/src/P3-f12/official/tribserver/tribserver -agency=agency1 -masterstore=${MASTER_STORAGE_PORT} -ownstore=${AGENCY_STORAGE_PORT_1} -port=${AGENCY_PORT_1} -prefer=1 &
+AGENCY_SERVER_PID_1=$!
+sleep 1
+#echo agency1 Agency Server Established
+
+#Start agency server 2
+${PROJECT_PATH}/src/P3-f12/official/storageserver/storageserver -port=${AGENCY_STORAGE_PORT_2} 2> /dev/null &
+AGENCY_STORAGE_SERVER_PID_2=$!
+sleep 1
+
+${PROJECT_PATH}/src/P3-f12/official/tribserver/tribserver -agency=agency2 -masterstore=${MASTER_STORAGE_PORT} -ownstore=${AGENCY_STORAGE_PORT_2} -port=${AGENCY_PORT_2} -prefer=2 &
+AGENCY_SERVER_PID_2=$!
+sleep 1
+#echo agency2 Agency Server Established
+echo ""
+
+echo "***************"
+echo "* create user *"
+echo "***************"
+${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} uc user1
+sleep 1
+echo ""
+
+echo "*************************"
+echo "* create duplicate user *"
+echo "*************************"
+${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} uc user1
+sleep 1
+echo ""
+
+echo "***********************************"
+echo "* add flight to unexisted airline *"
+echo "***********************************"
+${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} fa AA 123 d f t 1 50
+sleep 1
+echo ""
+
+echo "**************"
+echo "* add flight *"
+echo "**************"
+${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} fa JetBlue 123 d f t 1 50
+sleep 1
+echo ""
+
+echo "************************"
+echo "* add duplicate flight *"
+echo "************************"
+${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} fa JetBlue 123 d f t 1 50
+sleep 1
+echo ""
+
+echo "***********************"
+echo "* view unexisted user *"
+echo "***********************"
+${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} bl user2
+sleep 1
+echo ""
+
+echo "*************"
+echo "* view user *"
+echo "*************"
+${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} bl user1
+sleep 1
+echo ""
+
+echo "****************"
+echo "* view flights *"
+echo "****************"
+${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} fv f t d
+echo ""
+sleep 1
+
+echo "**********************************"
+echo "* book flight for unexisted user *"
+echo "**********************************"
+${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} ba user2 JetBlue-123
+echo ""
+sleep 1
+
+echo "*************************"
+echo "* book unexisted flight *"
+echo "*************************"
+${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} ba user1 JetBlue-124
+echo ""
+sleep 1
+
+echo "***************"
+echo "* book flight *"
+echo "***************"
+${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} ba user1 JetBlue-123
+sleep 1
+${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} bl user1
+sleep 1
+${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} fv f t d
+echo ""
+sleep 1
+
+echo "***************************"
+echo "* book unavailable flight *"
+echo "***************************"
+${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} uc user2
+sleep 1
+${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} ba user2 JetBlue-123
+sleep 1
+${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} bl user2
+sleep 1
+${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} fv f t d
+echo ""
+sleep 1
+
+echo "*****************"
+echo "* remove ticket *"
+echo "*****************"
+${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} br user1 JetBlue-123
+sleep 1
+${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} bl user1
+sleep 1
+${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} fv f t d
+echo ""
+sleep 1
+
+echo "**************************"
+echo "* remove unbooked ticket *"
+echo "**************************"
+${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} br user1 JetBlue-123
+sleep 1
+${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} bl user1
+sleep 1
+${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} fv f t d
+echo ""
+sleep 1
+
+
+
+
+
+#echo "remove unbooked ticket"
+#${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} fa JetBlue 123 d f t 10 50
+#${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} fv f t d
+
+#${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} br user1 JetBlue-123
+#${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} fv f t d
+#${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} bl user1
+
+#echo "remove unexisted flight"
+#${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} fa JetBlue 123 d f t 10 50
+#${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} fv f t d
+#${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} uc user1
+#${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} br user1 JetBlue-124
+#${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} fv f t d
+#${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} bl user1
+
+sleep 30
+#echo "##########################################################################"
+#echo ""
+#echo "*********************** Add One Flight ***********************"
+#${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} fa JetBlue 123 d f t 1 50
+#sleep 1
+
+#echo ""
+#echo "*********************** Add Existed Flight ***********************"
+#${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} fa JetBlue 123 d f t 1 50
+#sleep 1
+
+#echo ""
+#echo "*********************** Add Two More Flight ***********************"
+#${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} fa JetBlue 124 d f t 2 50
+#${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} fa JetBlue 125 d f t 4 50
+#sleep 1
+
+#echo "##########################################################################"
+#echo ""
+#echo "*********************** Create TWo Users ***********************"
+#${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} uc user1
+#${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} uc user2
+
+#echo ""
+#echo "************************* Book One Ticket **************************"
+#${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} ba user1 JetBlue-124
+
+#echo ""
+#echo "************************* View Flight **************************"
+#${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} fv f t d 
+
+#echo ""
+#echo "************************* View User Booking **************************"
+#${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} bl user1
+
+#echo ""
+#echo "*********************** Compete For One Ticket ***********************"
+#${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} ba user1 JetBlue-124 &
+#${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} ba user2 JetBlue-124
+
+#echo ""
+#echo "*********************** View Booking Result ***********************"
+#${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} bl user1
+#${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} bl user2
+#${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} fv f t d
+
+#echo "##########################################################################"
+#echo ""
+#echo "*********************** Return Tickets ***********************"
+#${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} br user1 JetBlue-124
+#${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} br user2 JetBlue-124
+
+#echo ""
+#echo "*********************** View Booking Result ***********************"
+#${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} bl user1
+#${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} bl user2
+#${PROJECT_PATH}/src/P3-f12/official/runclient/client -port=${AGENCY_PORT_1} fv f t d
+
+
+
+
+
+echo ""
+echo ""
+echo ""
+kill -9 ${AGENCY_SERVER_PID_2}
+kill -9 ${AGENCY_STORAGE_SERVER_PID_2}
+kill -9 ${AGENCY_SERVER_PID_1}
+kill -9 ${AGENCY_STORAGE_SERVER_PID_1}
+kill -9 ${AIRLINE_SERVER_PID_3}
+kill -9 ${AIRLINE_SERVER_PID_2}
+kill -9 ${AIRLINE_SERVER_PID_1}
+kill -9 ${MASTER_STORAGE_SERVER_PID}
+wait ${MASTER_STORAGE_SERVER_PID} 2> /dev/null

@@ -1,0 +1,228 @@
+package tranlayer
+
+import (
+	"net/rpc"
+	"P3-f12/official/transaction"
+	"P3-f12/contrib/airlineproto"
+	//"strings"
+	"time"
+	"P3-f12/official/lsplog"
+	"P3-f12/official/bufi"
+	"log"
+	"fmt"
+)
+
+/*
+* activeTransMap map[string](*activeTransMapEle)
+*/
+type activeTransMapEle struct {
+	decision int
+	finished int
+	pptMap map[string](*rpc.Client)
+	commitGrp map[string](int) // 0: not decide, 1: commit, 2: abort
+}
+
+type tranOrder struct {
+	flightID string
+	pptID string
+	amount int
+	conn *rpc.Client
+}
+
+type OldTransaction struct {
+	orderList *bufi.Buf
+	pptList []string
+}
+
+func (tl *TranLayer) transactionHandler(request *Request) {
+	switch request.content.reqType {
+	case INIT_TRANS:
+		tl.initTrans(request)
+	case TRANS_RESPONSE:
+		tl.responseTrans(request)
+	case TRANS_EXPIRED:
+		tl.expireTrans(request)
+	case TRANS_OLD:
+		tl.oldTrans(request)
+	}
+}
+
+func (tl *TranLayer) initTrans(request *Request) {
+	// initialize old transaction
+	oldTransaction := &OldTransaction{}
+	
+	// create participant list
+	orders := request.content.value.([]*tranOrder)
+	pptList := make([]string, len(orders))
+	for i, order := range orders {
+		pptList[i] = order.pptID
+	}
+	oldTransaction.pptList = pptList
+	// send initialize transaction msg to participants
+	// create active transaction
+	activeTrans := &activeTransMapEle{}
+	activeTrans.decision = transaction.NOT_DECIDED
+	activeTrans.finished = 0
+	pptMap := make(map[string](*rpc.Client))
+	commitGrp := make(map[string](int))
+	transID := request.content.key
+	orderList := bufi.NewBuf()
+	log.Printf("[%s] Init T(%s)", tl.myhostport, transID)
+	for _, order := range orders {
+		orderList.Insert(order)
+		//s := []string{order.pptID, order.flightID}
+		//transKey := strings.Join(s, "#")
+		transKey := order.pptID
+		pptMap[transKey] = order.conn
+		commitGrp[transKey] = transaction.NOT_DECIDED
+	}
+	
+	oldTransaction.orderList = orderList
+	tl.oldTransactionMap[transID] = oldTransaction
+	
+	activeTrans.pptMap = pptMap
+	activeTrans.commitGrp = commitGrp
+	tl.activeTransMap[transID] = activeTrans
+	
+	// TODO: store log to persistent storage
+	
+	
+	tl.deferTransMap[transID] = request.replyc
+}
+
+func (tl *TranLayer) responseTrans(request *Request) {
+	lsplog.Vlogf(5, "Response transaction...")
+	
+	args := request.content.value.(*airlineproto.TranArgs)
+	tranID := args.TranID
+	pptID := args.TM
+	//flightID := args.FlightID
+	response := args.Vote
+	
+	activeTrans, exist := tl.activeTransMap[tranID]
+	if exist == false {
+		// check old transaction log
+		oldDecision, exist := tl.oldLog[tranID]
+		
+		if exist == false {
+			lsplog.Vlogf(5, "Response received for inactive transaction.")
+		} else {
+			// someone who doesn't know the transaction ended
+			args := &airlineproto.TranArgs{transaction.TRANS_RESPONSE, 
+				tranID, args.FlightID, 0, nil, oldDecision, tl.myhostport}
+			var reply airlineproto.TranReply
+			conn, _ := tl.lib_conn.GetServerAt(args.TM)
+			conn.Call("AirlineRPC.Transaction", args, &reply)
+		}
+		return
+	}
+	
+	//s := []string{pptID, flightID}
+	//transKey := strings.Join(s, "#")
+	transKey := pptID
+	vote, found := activeTrans.commitGrp[transKey]
+	
+	if !found {
+		lsplog.Vlogf(5, "Participant not found %s",transKey)
+		return
+	}
+	
+	if vote != transaction.NOT_DECIDED {
+		// duplicate vote
+		lsplog.Vlogf(5, "Duplicate vote")
+		return
+	}
+	
+	activeTrans.commitGrp[transKey] = response
+	if activeTrans.decision != transaction.ABORT {
+		activeTrans.decision = response
+	}
+	
+	for k,v := range activeTrans.commitGrp {
+		lsplog.Vlogf(6, k+":%d", v)
+	}
+	
+	activeTrans.finished += 1
+	log.Printf("[%s] T(%s) (%d/%d)", tl.myhostport, tranID, activeTrans.finished, len(activeTrans.commitGrp) )
+	if activeTrans.finished < len(activeTrans.commitGrp) {
+		return
+	}
+	delete(tl.activeTransMap, tranID)
+	
+	// send decision to all participants that vote commit
+	// TODO: store log to persistent storage
+	for transKey, vote = range activeTrans.commitGrp {
+		if vote == transaction.COMMIT {
+			log.Printf("[%s] Send final %d to %s for T(%s)", 
+			tl.myhostport, activeTrans.decision, transKey, tranID)
+			
+			conn := activeTrans.pptMap[transKey]
+			flightID := transKey
+			
+			args := &airlineproto.TranArgs{transaction.TRANS_RESPONSE, 
+				tranID, flightID, 0, nil, activeTrans.decision, tl.myhostport}
+			var reply airlineproto.TranReply
+			conn.Call("AirlineRPC.Transaction", args, &reply)
+		}
+	}
+	
+	
+	
+	
+	tl.oldLog[tranID] = activeTrans.decision
+	replyc, _ := tl.deferTransMap[tranID]
+	if activeTrans.decision == transaction.COMMIT {
+		replyc <- true
+	} else {
+		replyc <- false
+	}
+	
+}
+
+func (tl *TranLayer) oldTrans(request *Request) {
+	args := request.content.value.(*airlineproto.TranArgs)
+	transID := args.TranID
+	old, exist := tl.oldLog[transID]
+	decision := transaction.NOT_DECIDED
+	if exist == true {
+		decision = old
+	}
+	request.replyc <- decision
+}
+
+func (tl *TranLayer) expireTrans(request *Request) {
+	lsplog.Vlogf(5, "Expire transaction...")
+	
+	transID := request.content.key
+	activeTrans, exist := tl.activeTransMap[transID]
+	if exist == false {
+		return
+	}
+	// send decision to all participants that vote commit
+	// TODO: store log to persistent storage
+	for transKey, vote := range activeTrans.commitGrp {
+		if vote == transaction.COMMIT {
+			conn := activeTrans.pptMap[transKey]
+			//infos := strings.SplitN(transKey, "#", 2)
+			//infos := transKey
+			flightID := transKey
+			args := &airlineproto.TranArgs{transaction.TRANS_RESPONSE, 
+				transID, flightID, 0, nil, activeTrans.decision, tl.myhostport}
+			var reply airlineproto.TranReply
+			conn.Call("AirlineRPC.Transaction", args, &reply)
+		}
+	}
+	
+	replyc, _ := tl.deferTransMap[transID]
+	if activeTrans.decision == transaction.COMMIT {
+		replyc <- true
+	} else {
+		replyc <- false
+	}
+}
+
+func (tl *TranLayer) transTimer(transID string) {
+	time.Sleep(time.Duration(transaction.EXPIRARY_SECONDS) * time.Second)
+	req := &reqContent{TRANS_EXPIRED, transID, nil}
+	tl.reqChan <- &Request{req, nil}
+}

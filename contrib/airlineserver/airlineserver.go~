@@ -1,0 +1,53 @@
+package main
+
+// Server driver - creates a storage server and registers it for RPC.
+//
+// DO NOT MODIFY THIS FILE FOR YOUR PROJECT
+
+import (
+	"P3-f12/contrib/airlineimpl" // 'official' vs 'contrib' here
+	"P3-f12/contrib/airlinerpc"
+	"flag"
+	"fmt"
+	"log"
+	"net"
+	"net/http"
+	"net/rpc"
+	"strconv"
+	"strings"
+)
+
+var portnum *int = flag.Int("port", 8009, "port # to listen on.")
+/*var myhostport *string = flag.String("myhostport", "", "Specify the storage master node, making this node a slave.  Defaults to its own port (self-mastering).")*/
+var airlineID *string = flag.String("airline", "JetBlue", "AirlineCompany")
+var masterStoragePort *int = flag.Int("masterstore", 9000, "The server to query address of other servers")
+var ownStoragePort *int = flag.Int("ownstore", 9001, "Local storage server")
+var replicas *string = flag.String("replicas", "localhost:7000", "replica addresses")
+var pos *int = flag.Int("pos", 1, "position in paxos cluster")
+
+func main() {
+	flag.Parse()
+	myhostport := fmt.Sprintf("localhost:%d", *portnum)
+	masterStorage := fmt.Sprintf("localhost:%d", *masterStoragePort)
+	ownStorage := fmt.Sprintf("localhost:%d", *ownStoragePort)
+	
+	l, e := net.Listen("tcp", myhostport)
+	if e != nil {
+		log.Fatal("listen error:", e)
+	}
+	_, listenport, _ := net.SplitHostPort(l.Addr().String())
+	//log.Println("Server starting on ", listenport)
+	*portnum, _ = strconv.Atoi(listenport)
+	as, lp, err := airlineimpl.NewAirlineServer(*airlineID, myhostport, masterStorage, ownStorage, strings.Split(*replicas, "-"), *pos)
+	if err != nil {
+		fmt.Println("@@ Build Airline Server Fail")
+		fmt.Println(err)
+		return
+	}
+
+	arpc := airlinerpc.NewAirlineRPC(as)
+	rpc.Register(arpc)
+	rpc.Register(lp)
+	rpc.HandleHTTP()
+	http.Serve(l, nil)
+}

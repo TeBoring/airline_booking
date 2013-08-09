@@ -1,0 +1,6 @@
+lost connection for 2PC
+a) http://docs.actian.com/ingres/9.2/star-user-guide/1302-two-phase-commit
+b) http://stackoverflow.com/questions/7389382/two-phase-commit-question
+
+master should resend if no commitment
+
