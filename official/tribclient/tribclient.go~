@@ -1,0 +1,99 @@
+package tribclient
+
+import (
+	"log"
+	"net"
+	"net/rpc"
+	"P3-f12/official/tribproto"
+	"P3-f12/contrib/airlineproto"
+	"strconv"
+	//"time"
+	"fmt"
+)
+
+type Tribbleclient struct {
+	serverAddress string
+	serverPort    string
+	client        *rpc.Client
+}
+
+func NewTribbleclient(serverAddress string, serverPort string) (*Tribbleclient, error) {
+	client, err := rpc.DialHTTP("tcp", net.JoinHostPort(serverAddress, serverPort))
+	if err == nil {
+		return &Tribbleclient{serverAddress, serverPort, client}, nil
+	}
+	log.Fatal("Could not connect to server:", err)
+	return nil, err
+}
+
+func (tc *Tribbleclient) Close() {
+	tc.client.Close()
+}
+
+func (tc *Tribbleclient) CreateUser(Userid string) (int, error) {
+	args := &tribproto.CreateUserArgs{Userid}
+	var reply tribproto.CreateUserReply
+	//log.Printf("tribclient create user @0")
+	err := tc.client.Call("Tribserver.CreateUser", args, &reply)
+	//log.Printf("tribclient create user @1")
+	if err != nil {
+		return 0, err
+	}
+	return reply.Status, nil
+}
+
+func (tc *Tribbleclient) ViewFlights(From, To, DepartureTime string) ([]airlineproto.FlightInfo, int, error) {
+	args := &tribproto.ViewFlightsArgs{From, To, DepartureTime}
+	var reply tribproto.ViewFlightsReply
+	err := tc.client.Call("Tribserver.ViewFlights", args, &reply)
+	if err != nil {
+		return nil, 0, err
+	}
+	return reply.Flights, reply.Status, nil
+}
+
+func (tc *Tribbleclient) dobooking(funcname, Userid string, FlightIds []string) (int, error) {
+	args := &tribproto.BookingArgs{Userid, FlightIds}
+	var reply tribproto.BookingReply
+	err := tc.client.Call(funcname, args, &reply)
+	if err != nil {
+		return 0, err
+	}
+	return reply.Status, nil
+}
+
+func (tc *Tribbleclient) AddBooking(Userid string, FlightIds []string) (int, error) {
+	return tc.dobooking("Tribserver.AddBooking", Userid, FlightIds)
+}
+
+func (tc *Tribbleclient) RemoveBooking(Userid string, FlightIds []string) (int, error) {
+	return tc.dobooking("Tribserver.RemoveBooking", Userid, FlightIds)
+}
+
+func (tc *Tribbleclient) GetBookings(Userid string) ([]airlineproto.FlightInfo, int, error) {
+	args := &tribproto.GetBookingsArgs{Userid}
+	var reply tribproto.GetBookingsReply
+	err := tc.client.Call("Tribserver.GetBookings", args, &reply)
+	if err != nil {
+		return nil, 0, err
+	}
+	return reply.Flights, reply.Status, nil
+}
+
+func (tc *Tribbleclient) AddFlight(Airline, FlightNum, Departure, From, To, Capacity, Cost string) (int, error) {
+	capInt, err := strconv.Atoi(Capacity)
+	costInt, err := strconv.Atoi(Cost)
+	if err != nil {
+		return 0, err
+	}
+	
+	args := &tribproto.AddFlightArgs{airlineproto.FlightInfo{tribproto.GetNewFlightId(Airline, FlightNum), Departure, From, To, capInt, capInt, costInt}}
+	var reply tribproto.AddFlightReply
+	err = tc.client.Call("Tribserver.AddFlight", args, &reply)
+	if err != nil {
+		return 0, err
+	}
+	return reply.Status, nil
+}
+
+//remove flight

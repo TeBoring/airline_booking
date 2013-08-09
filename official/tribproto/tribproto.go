@@ -1,0 +1,93 @@
+package tribproto
+
+import (
+	"P3-f12/contrib/airlineproto"
+	"strings"
+)
+// Status codes
+const (
+	OK = iota
+	ENOSUCHUSER
+	ENOSUCHFLIGHT
+	ENOSUCHAIRLINE // for AddFlight
+	EBOOKINGFAILED
+	EEXISTS // for Create user, AddBooking, AddFlight
+	ENOAIRLINE
+	ENOTBOOKED
+)
+
+//func (f *FlightInfo) ToString() string {
+//	return f.Airline+SEPD+f.FlightNum+SEPD+f.DepartureDate+SEPD+f.From+SEPD+f.To+SEPD+f.TotalCapacity+SEPD+f.Cost+SEPD+f.SeatsLeft
+//}
+//
+//func (f *FlightInfo) FromString(s string) {
+//	sp := strings.Split(s, SEPD)
+//	f.Airline = sp[0]
+//	f.FlightNum = sp[1]
+//	f.DepartureDate = sp[2]
+//	f.From = sp[3]
+//	f.To = sp[4]
+//	f.TotalCapacity = sp[5]
+//	f.Cost = sp[6]
+//	f.SeatsLeft = sp[7]
+//}
+//
+//func (f *FlightInfo) GetFlightId() string {
+//	return f.Airline+SEPD+f.FlightNum+SEPD+f.DepartureDate
+//}
+//
+
+const SEPD string = "-"
+func GetAirlineFromFlightId(s string) string {
+	sp := strings.Split(s, SEPD)
+	return sp[0]
+}
+
+func GetNewFlightId(airline, uniqueid string) string {
+	return airline + SEPD + uniqueid
+}
+
+type CreateUserArgs struct {
+	Userid string
+}
+
+type CreateUserReply struct {
+	Status int
+}
+
+type ViewFlightsArgs struct {
+	From string
+	To string
+	DepartureDate string
+}
+
+type ViewFlightsReply struct {
+	Status   int
+	Flights []airlineproto.FlightInfo
+}
+
+type BookingArgs struct {
+	Userid   string
+	FlightIds []string
+}
+
+type BookingReply struct {
+	Status int
+}
+
+type GetBookingsArgs struct {
+	Userid string
+}
+
+type GetBookingsReply struct {
+	Status  int
+	Flights []airlineproto.FlightInfo
+}
+
+type AddFlightArgs struct {
+	Flight airlineproto.FlightInfo
+}
+
+type AddFlightReply struct {
+	Status int
+}
